@@ -1,0 +1,176 @@
+---
+title: "Untitled"
+author: "Sebastian Zovko"
+date: "6/10/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data Exploration & Wrangling
+
+```{r}
+#data source: https://github.com/rfordatascience/tidytuesday/blob/master/data/2021/2021-06-01/readme.md
+#install.packages("survivoR")
+library(tidyverse)
+library(tidymodels)
+library(kknn)
+library(discrim)
+library(survivoR)
+
+#dataframes to work with
+summary <- read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2021/2021-06-01/summary.csv')
+head(summary)
+head(castaways)
+head(challenges)
+head(immunity)
+head(rewards)
+head(viewers)
+```
+```{r}
+castaways %>%
+  group_by(season) %>%
+  summarize(total_players = n_distinct(order)) %>%
+  summarize(min(total_players))
+
+castaways %>%
+  group_by(season) %>%
+  summarize(total_players = n_distinct(order)) %>%
+  summarize(max(total_players))
+```
+
+Need a min of 16 players
+
+```{r}
+castaways %>%
+  group_by(season) %>%
+  summarize(total_players = n_distinct(order)) %>%
+full_join(castaways, by = "season") %>%
+  mutate(tag_removal = total_players - order) %>%
+  filter(tag_removal < 16) %>%
+  mutate(rank = total_players - order + 1,
+        rank_f = as_factor(`rank`),
+        personality = as.factor(personality_type)) %>%
+select(rank, rank_f, age, personality, total_votes_received, immunity_idols_won) %>%
+  drop_na() -> rank_data
+```
+
+```{r}
+rank_data %>%
+  count(personality) %>%
+  arrange(desc(n))
+```
+There will have to be 15 dummy variables. This will be a considerable number of predictors.
+
+```{r}
+set.seed(1234)
+rank_split <- initial_split(rank_data)
+rank_training <- training(rank_split)
+rank_testing <- testing(rank_split)
+```
+
+# Fitting an LDA model
+
+```{r}
+lda_spec <- discrim_linear() %>%
+set_mode("classification") %>%
+set_engine("MASS")
+
+rank_lda <- fit(lda_spec, rank_f ~ age + personality +
+                  total_votes_received + immunity_idols_won, data = rank_data)
+
+augment(rank_lda, new_data = rank_training) %>%
+  accuracy(truth = rank_f, estimate = .pred_class)
+```
+Obviously this is quite poor performance, however considering the task at hand, a random guess is $1/16 = 0.0625$ so this model is vastly superior to this.
+
+# Fitting a QDA model
+
+```{r}
+qda_spec <- discrim_regularized(frac_common_cov = 0, frac_identity = 0) %>%
+set_mode("classification") %>%
+set_engine("klaR")
+
+rank_qda <- fit(qda_spec, rank_f ~ age + personality +
+                  total_votes_received + immunity_idols_won, data = rank_data)
+
+rank_qda
+```
+
+This will clearly be worse since the misclassification rate it 100%.
+
+# Fitting KNN Model
+
+(trying the default of 5)
+
+```{r}
+knn_spec_5 <- nearest_neighbor(neighbors = 5) %>%
+set_mode("classification") %>%
+set_engine("kknn")
+
+rank_knn_5 <- fit(knn_spec_5, rank_f ~ age + personality +
+                  total_votes_received + immunity_idols_won, data = rank_data)
+
+augment(rank_knn_5, new_data = rank_training) %>%
+  accuracy(truth = rank_f, estimate = .pred_class)
+```
+
+This is pretty insane (something wrong with code?), let's see if we can hyperparametarize
+
+```{r}
+knn_spec <- nearest_neighbor(neighbors = tune()) %>%
+set_mode("classification") %>%
+set_engine("kknn")
+
+set.seed(1234)
+rank_fold <- vfold_cv(rank_training)
+
+param_grid <- tibble(neighbors = 25:50)
+
+rank_rec <- recipe(rank_f ~ ., data = rank_data)
+
+rank_wf <- workflow() %>%
+  add_model(knn_spec) %>%
+  add_recipe(rank_rec)
+
+tune_res <- tune_grid(
+  object = rank_wf,
+  resamples = rank_fold,
+  grid = param_grid,
+  control = control_grid(verbose = TRUE)
+)
+
+autoplot(tune_res)
+```
+
+We can see that 5 was the tip of the iceberg, there is actually a much higher peak in accuracy where k = 15.
+Let's calcualte this:
+
+```{r}
+knn_spec_45 <- nearest_neighbor(neighbors = 45) %>%
+set_mode("classification") %>%
+set_engine("kknn")
+
+rank_knn_45 <- fit(knn_spec_45, rank_f ~ age + personality +
+                  total_votes_received + immunity_idols_won, data = rank_data)
+
+augment(rank_knn_45, new_data = rank_training) %>%
+  accuracy(truth = rank_f, estimate = .pred_class)
+```
+
+Looks like maybe the training estiamte might not have been a good estimate for testing error. Let's see all the training errors
+
+```{r}
+augment(rank_lda, new_data = rank_testing) %>%
+  accuracy(truth = rank_f, estimate = .pred_class)
+
+augment(rank_knn_5, new_data = rank_testing) %>%
+  accuracy(truth = rank_f, estimate = .pred_class)
+
+augment(rank_knn_45, new_data = rank_testing) %>%
+  accuracy(truth = rank_f, estimate = .pred_class)
+```
+
+Idk what's going on but one way or another knn outperforms LDA and QDA 
