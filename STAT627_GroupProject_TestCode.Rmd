@@ -6,6 +6,8 @@ output: pdf_document
 ---
 ### Survivor TV Show data!
 
+
+(Data)[https://github.com/rfordatascience/tidytuesday/blob/master/data/2021/2021-06-01/readme.md]
 **Description**
 The data this week comes from the survivorR R package by way of Daniel Oehm.
 
@@ -27,6 +29,7 @@ library(tidymodels)
 library(tidytuesdayR)
 library(tidyverse)
 library(survivoR)
+library(vip)
 ```
 
 
@@ -47,6 +50,167 @@ summary <- tuesdata$summary
 
 
 ```{r}
-head(summary)
+x <- tuesdata$summary
+x2 <- tuesdata$castaways
+```
+
+```{r}
+head(x)
+```
+
+
+```{r}
+x3 <- x %>% right_join(x2, by = c("season_name", "season", "full_name"))
+```
+
++ Shuffle Rows
+```{r}
+set.seed(1234)
+rows <- sample(nrow(x3))
+x3 <- x3[rows, ]
+```
+
++ Create Response Column : Winner_Count (winner or not)
+```{r}
+x4 <- x3 %>%
+  mutate(Winner_Count = ifelse(winner == castaway, 1,0))
+x4
+```
+
++ Impute Missing Values
++ Categorical : fill in with most frequent value
++ Numerical : fill in with zero
+```{r}
+x4[, sapply(x4, function(x) !is.numeric(x))] <- apply(x4[, sapply(x4, function(x) !is.numeric(x))], 2, function(x) {x[is.na(x)] <- names(sort(table(x), decreasing = TRUE)[1]); x})
+
+x4[is.na(x4)] = 0
+```
+
+```{r}
+head(x4)
+```
+
+
+```{r}
+set.seed(1234)
+x5 <- x4
+x5 <- x5 %>% select (-c(city, castaway, location,country))
+
+factorfilt = names(x5)
+#x5 <- as.character(unlist(x4[,factorfilt]))
+
+x5[, factorfilt] <- lapply(x5[, factorfilt], as.character)
+
+factornames = c("viewers_premier", "viewers_finale", "viewers_reunion", "viewers_mean", "rank", "age", "day", "order", "total_votes_received", "immunity_idols_won", "Winner_Count","season")
+
+x5[, factornames] <- lapply(x5[, factornames], as.numeric)
+x5 <- na.omit(x5)
+x5_split <- initial_split(x5) 
+x5_train <- training(x5_split) 
+x5_test <- testing(x5_split)
+
+x5
+```
+
+```{r}
+x5_formula <- as.factor(Winner_Count) ~ .
+lr_spec <- logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+lr_fit <- fit(lr_spec, x5_formula, data = x5_train)
+
+```
+
+
+
+
+```{r}
+# augment appends predictions at the end of the df
+preds <- augment(lr_fit, new_data = x5_test)
+```
+
+```{r}
+preds
+```
+
+
+```{r}
+preds %>%
+  conf_mat(estimate = .pred_class, truth = Winner_Count) %>% 
+  autoplot(type = "heatmap")
+```
+
+https://rpubs.com/Tarid/tidymodel_5
+
+```{r}
+
+lr_fit %>% 
+  collect_metrics()
+```
+
+
+```{r}
+rf_mod <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_engine("ranger", num.threads = cores) %>% 
+  set_mode("classification")
+
+rf_recipe <- 
+  recipe(as.factor(Winner_Count) ~ ., data = x5_train) %>% 
+  step_rm(season)
+
+rf_workflow <- 
+  workflow() %>% 
+  add_model(rf_mod) %>% 
+  add_recipe(rf_recipe)
+
+rf_mod <- 
+  rand_forest(mtry = 8, min_n = 7, trees = 1000) %>% 
+  set_engine("ranger", num.threads = cores, importance = "impurity") %>% 
+  set_mode("classification")
+
+rf_workflow <- 
+  rf_workflow %>%
+  update_model(rf_mod)
+
+set.seed(1234)
+
+rf_fit <- 
+  last_rf_workflow %>% 
+  last_fit(x5_split) 
+
+rf_fit
+```
+## SVM
+
+```{r}
+x5_formula <- as.numeric(Winner_Count) ~ .
+
+svm_spec <- svm_poly(degree = 1, cost = 1/4) %>%
+  set_engine("kernlab") %>%
+  set_mode("regression")
+
+svm_fit <- workflow() %>%
+  add_model(svm_spec) %>%
+  add_formula(x5_formula) %>%
+  fit(x5_train)
+
+svm_fit %>%
+  pull_workflow_fit() %>%
+  vip(method = "permute", 
+      target = "Winner_Count", 
+      metric = "rsquared",
+      pred_wrapper = kernlab::predict, train = x5_train) + theme_bw()
+```
+
+```{r}
+
+x5_test_ <- x5_test %>% select (-c(Winner_Count))
+# augment appends predictions at the end of the df
+preds <- augment(svm_fit, new_data = x5_test_)
+
+preds %>%
+  conf_mat(estimate = .pred_class, truth = Winner_Count) %>% 
+  autoplot(type = "heatmap")
 ```
 
