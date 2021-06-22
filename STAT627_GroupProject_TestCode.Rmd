@@ -201,6 +201,28 @@ svm_fit %>%
       target = "Winner_Count", 
       metric = "rsquared",
       pred_wrapper = kernlab::predict, train = x5_train) + theme_bw()
+
+param_grid <- tibble(degree = c(1,2,3))
+
+x5_folds <- vfold_cv(x5_train, v = 5)
+
+tune_res <- tune_grid(
+  svm_fit, 
+  resamples = x5_folds, 
+  grid = param_grid,
+  control = control_grid(verbose = TRUE, save_pred = TRUE)
+)
+
+
+
+collect_metrics(tune_res)
+
+autoplot(tune_res)
+
+collect_predictions(tune_res) %>%
+  filter(id == "Fold1") %>%
+  conf_mat(truth = Winner_Count, estimate = .pred_class) %>%
+  autoplot(type= "heatmap")
 ```
 
 ```{r}
@@ -212,5 +234,43 @@ preds <- augment(svm_fit, new_data = x5_test_)
 preds %>%
   conf_mat(estimate = .pred_class, truth = Winner_Count) %>% 
   autoplot(type = "heatmap")
+```
+
+#SVM Clas
+
+```{r}
+#Carseats_train
+x5_folds <- vfold_cv(x5_train, v = 5)
+
+x5_formula <- as.numeric(Winner_Count) ~ .
+
+rec_spec <- recipe(x5_formula, data = x5_train) %>%
+  step_normalize(all_predictors())
+
+svm_poly_spec <- svm_poly(degree = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("kernlab")
+
+carseats_wf <- workflow() %>%
+  add_recipe(rec_spec) %>%
+  add_model(svm_poly_spec)
+
+param_grid <- tibble(degree = c(1,2,3))
+
+tune_res <- tune_grid(
+  x5_wf, 
+  resamples = x5_folds, 
+  grid = param_grid,
+  control = control_grid(verbose = TRUE, save_pred = TRUE)
+)
+
+collect_metrics(tune_res)
+
+autoplot(tune_res)
+
+collect_predictions(tune_res) %>%
+  filter(id == "Fold1") %>%
+  conf_mat(truth = Winner_Count, estimate = .pred_class) %>%
+  autoplot(type= "heatmap")
 ```
 
